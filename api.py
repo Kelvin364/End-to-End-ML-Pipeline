@@ -46,10 +46,37 @@ from supabase import create_client, Client
 from src.prediction   import predict, get_model_metadata, reload_model
 from src.model        import retrain
 from src.preprocessing import bytes_to_array, CLASSES
+import requests as http_requests
+
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
+GITHUB_REPO  = os.getenv("GITHUB_REPO", "")
+
+def trigger_github_retrain():
+    """Fire GitHub Actions retrain workflow. Uses zero RAM on Render."""
+    if not GITHUB_TOKEN or not GITHUB_REPO:
+        logger.warning("GITHUB_TOKEN or GITHUB_REPO not set")
+        return False
+    try:
+        r = http_requests.post(
+            f"https://api.github.com/repos/{GITHUB_REPO}/dispatches",
+            headers={
+                "Authorization": f"token {GITHUB_TOKEN}",
+                "Accept"       : "application/vnd.github.v3+json"
+            },
+            json={"event_type": "trigger-retrain"},
+            timeout=10
+        )
+        success = r.status_code == 204
+        logger.info(f"GitHub Actions trigger: {'success' if success else f'failed {r.status_code}'}")
+        return success
+    except Exception as e:
+        logger.error(f"GitHub Actions trigger error: {e}")
+        return False
 
 # ── Supabase ───────────────────────────────────────────────────────────────────
 SUPABASE_URL    = os.getenv("SUPABASE_URL")
@@ -381,13 +408,10 @@ async def upload_images(
             .execute().data
         )
         auto_triggered = pending_count >= RETRAIN_THRESHOLD
-        if auto_triggered and not _retrain_lock.locked():
-            # Schedule immediate execution in background
-            scheduler.add_job(
-                autonomous_retrain_job,
-                id="immediate_retrain",
-                replace_existing=True
-            )
+        auto_triggered = False
+        if pending_count >= RETRAIN_THRESHOLD:
+            auto_triggered = trigger_github_retrain()
+            
     except Exception:
         pending_count  = -1
         auto_triggered = False
@@ -405,97 +429,44 @@ async def upload_images(
 @app.post("/retrain", tags=["Training"])
 async def manual_retrain():
     """
-    Manually trigger retraining on all pending (not yet retrained) images.
-
-    This endpoint is called by the Streamlit 'Trigger Retrain' button.
-    The autonomous scheduler also calls the same underlying logic automatically.
-
-    Returns a summary of the retraining result.
+    Triggers retraining via GitHub Actions.
+    GitHub Actions has 7GB RAM — Render free tier has 512MB.
+    Retraining runs there, results logged to Supabase.
     """
-    if _retrain_lock.locked():
-        return JSONResponse(
-            status_code=409,
-            content={"detail": "Retraining already in progress. Please wait."}
-        )
-
-    async with _retrain_lock:
-        # Fetch pending images
+    try:
         response = (
             supabase.table("uploaded_images")
-            .select("id, storage_path, label")
+            .select("id", count="exact")
             .eq("retrained", False)
             .execute()
         )
-        pending = response.data
+        pending_count = len(response.data)
 
-        if len(pending) < 5:
+        if pending_count < 5:
             return {
                 "status" : "skipped",
-                "reason" : f"Only {len(pending)} pending images. Minimum is 5.",
-                "pending": len(pending)
+                "reason" : f"Only {pending_count} pending images. Minimum is 5.",
+                "pending": pending_count
             }
 
-        # Download images
-        train_images, train_labels, used_ids = [], [], []
-        for record in pending:
-            try:
-                raw = supabase.storage.from_(STORAGE_BUCKET).download(record["storage_path"])
-                img = np.array(Image.open(io.BytesIO(raw)).convert("RGB"), dtype=np.uint8)
-                label_name = record.get("label", "")
-                if label_name not in CLASSES:
-                    continue
-                train_images.append(img)
-                train_labels.append(CLASSES.index(label_name))
-                used_ids.append(record["id"])
-            except Exception as e:
-                logger.error(f"Download failed for {record['id']}: {e}")
+        triggered = trigger_github_retrain()
 
-        if len(train_images) < 5:
-            return {"status": "skipped", "reason": "Too few valid images after download."}
-
-        split_idx    = max(1, int(len(train_images) * 0.8))
-        val_images   = train_images[split_idx:]
-        val_labels   = train_labels[split_idx:]
-        train_images = train_images[:split_idx]
-        train_labels = train_labels[:split_idx]
-
-        if not val_images:
-            val_images = train_images
-            val_labels = train_labels
-
-        # Retrain
-        result = retrain(
-            new_images    = train_images,
-            new_labels    = train_labels,
-            val_images    = val_images,
-            val_labels    = val_labels,
-            epochs        = 5,
-            batch_size    = 32,
-            learning_rate = 1e-4,
-        )
-
-        if result["improved"]:
-            reload_model()
-
-        # Mark as retrained
-        if used_ids:
-            supabase.table("uploaded_images").update(
-                {"retrained": True}
-            ).in_("id", used_ids).execute()
-
-        # Log run
-        supabase.table("retraining_runs").insert({
-            "triggered_by": "manual_ui",
-            "images_used" : result["images_used"],
-            "f1_before"   : result["f1_before"],
-            "f1_after"    : result["f1_after"],
-            "improved"    : result["improved"],
-            "duration_s"  : result["duration_s"],
-            "epochs_run"  : result["epochs_run"],
-        }).execute()
-
-        return {"status": "complete", **result}
-
+        return {
+            "status"   : "triggered" if triggered else "queued",
+            "message"  : (
+                f"Retraining triggered on GitHub Actions "
+                f"with {pending_count} images."
+                if triggered else
+                f"{pending_count} images queued. "
+                "Set GITHUB_TOKEN env var to enable auto-trigger."
+            ),
+            "pending"  : pending_count,
+            "runner"   : "github_actions",
+            "ram_available": "7GB"
+        }
+    except Exception as e:
+        logger.error(f"/retrain error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/results", tags=["Metrics"])
 async def get_results():
