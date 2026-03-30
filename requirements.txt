@@ -4,7 +4,8 @@ uvicorn[standard]==0.29.0
 python-multipart==0.0.9
 
 # ML
-tensorflow==2.16.1
+tensorflow==2.19.0
+keras==3.13.2
 scikit-learn==1.4.2
 numpy==1.26.4
 joblib==1.4.0
