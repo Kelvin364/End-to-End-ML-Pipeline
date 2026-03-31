@@ -113,40 +113,15 @@ try:
 
     model = build_model()
 
-    # Extract weights from .keras zip file directly
+    # Keras 3.x stores weights in model.weights.h5 inside the .keras zip.
+    # The correct way to load them is to pass the .keras file directly
+    # to load_weights — Keras handles the extraction internally.
     with zipfile.ZipFile(MODEL_LOCAL, "r") as z:
-        files_in_zip = z.namelist()
-        log(f"  Files in .keras: {files_in_zip}")
+        log(f"  Files in .keras: {z.namelist()}")
 
-        # Find the weights file
-        weights_file = next(
-            (f for f in files_in_zip if "weights" in f and f.endswith(".h5")),
-            None
-        )
-        if not weights_file:
-            # Try alternative names
-            weights_file = next(
-                (f for f in files_in_zip if f.endswith(".h5")), None
-            )
-
-        if weights_file:
-            # Extract weights to temp file and load
-            tmp_weights = "/tmp/extracted_weights.h5"
-            with z.open(weights_file) as wf:
-                with open(tmp_weights, "wb") as tf_out:
-                    tf_out.write(wf.read())
-            model.load_weights(tmp_weights)
-            log(f"  Loaded weights from: {weights_file}")
-        else:
-            log(f"  No .h5 weights file found in zip. Files: {files_in_zip}")
-            log("  Attempting direct model load as fallback...")
-            # Last resort — try direct load with error suppression
-            try:
-                model = tf.keras.models.load_model(MODEL_LOCAL, compile=False)
-                log("  Direct load succeeded")
-            except Exception as e2:
-                log(f"  Direct load also failed: {e2}")
-                log("  Proceeding with randomly initialized weights for demo")
+    # load_weights accepts .keras files directly in Keras 3.x
+    model.load_weights(MODEL_LOCAL)
+    log("  Weights loaded successfully from .keras file")
 
     model.compile(
         optimizer=tf.keras.optimizers.Adam(1e-4),
