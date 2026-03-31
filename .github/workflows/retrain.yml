@@ -15,23 +15,26 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Python 3.10
+      - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
-
-      - name: Cache pip packages
-        uses: actions/cache@v3
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-tf216
-          restore-keys: ${{ runner.os }}-pip-
+          python-version: '3.11'
 
       - name: Install dependencies
         run: |
-          pip install tensorflow==2.16.1 keras==3.3.3 \
-                      scikit-learn pillow numpy \
-                      supabase joblib -q
+          pip install --upgrade pip
+          pip install \
+            tensorflow==2.19.0 \
+            keras==3.13.2 \
+            scikit-learn \
+            pillow \
+            numpy \
+            supabase \
+            joblib -q
+
+      - name: Verify versions
+        run: |
+          python3 -c "import tensorflow as tf; import keras; print('TF:', tf.__version__, 'Keras:', keras.__version__)"
 
       - name: Run retraining job
         env:
@@ -47,3 +50,4 @@ jobs:
           name: retrain-log
           path: /tmp/retrain_log.txt
           retention-days: 7
+          if-no-files-found: ignore
