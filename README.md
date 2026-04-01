@@ -25,7 +25,7 @@ The system is deployed as a full production ML pipeline with a FastAPI backend, 
 | API Interactive Docs | https://blood-cell-api.onrender.com/docs |
 | Dashboard (Next.js) | https://mlpipeline.vercel.app |
 | GitHub Repository | https://github.com/Kelvin364/End-to-End-ML-Pipeline |
-| YouTube Demo | [INSERT YOUTUBE LINK] |
+| YouTube Demo | https://youtu.be/JevDK8HTYtM |
 
 ---
 
